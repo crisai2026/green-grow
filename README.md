@@ -2,8 +2,6 @@
 
 A calm farming game inside a forest. Grow plants from seeds, water them, harvest them and sell them. Raise chickens and goats. Deer and birds live in the forest too.
 
-The game is designed with a neurodivergent young person: clean screens, few elements, no flashing, no sound and no sudden movements.
-
 ## How to play
 
 Open `index.html` in any web browser. There is nothing to install.
