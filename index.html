@@ -1,0 +1,1085 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Green Grow</title>
+<style>
+  :root {
+    --panel: rgba(40, 34, 26, 0.82);
+    --text: #f3efe6;
+    --soft: #cfc6b4;
+    --accent: #9fd18b;
+    --btn: #5a4a38;
+    --btn-on: #6f8f4e;
+  }
+  html, body { margin: 0; height: 100%; background: #6b5a45; overflow: hidden;
+    font: 16px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--text); }
+  canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
+  .panel { position: fixed; background: var(--panel); border-radius: 12px; padding: 8px 14px; }
+  #status { top: 12px; left: 12px; min-width: 150px; }
+  #status .bar { height: 6px; background: rgba(255,255,255,0.15); border-radius: 3px; margin-top: 6px; overflow: hidden; }
+  #status .bar div { height: 100%; background: var(--accent); width: 0; }
+  #basket { top: 12px; right: 64px; max-width: 42vw; }
+  #helpBtn { position: fixed; top: 12px; right: 12px; width: 40px; height: 40px; border-radius: 12px;
+    border: none; background: var(--panel); color: var(--text); font-size: 20px; cursor: pointer; }
+  #message { left: 50%; transform: translateX(-50%); bottom: 92px; text-align: center;
+    max-width: calc(100vw - 48px); transition: opacity 1.2s ease; pointer-events: none; }
+  #toolbar { left: 50%; transform: translateX(-50%); bottom: 12px; display: flex; gap: 8px; padding: 8px;
+    max-width: calc(100vw - 32px); overflow-x: auto; }
+  #toolbar button { background: var(--btn); color: var(--text); border: 2px solid transparent; border-radius: 10px;
+    padding: 6px 10px; font: inherit; font-size: 15px; cursor: pointer; white-space: nowrap; min-height: 52px; }
+  #toolbar button.on { background: var(--btn-on); border-color: var(--accent); }
+  #toolbar button small { display: block; color: var(--soft); font-size: 12px; }
+  .card { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    background: rgba(30, 25, 18, 0.45); padding: 16px; }
+  .card.open { display: flex; }
+  .card > div { background: #3a3024; border-radius: 16px; padding: 20px 24px; max-width: 460px; width: 100%;
+    max-height: calc(100vh - 64px); overflow-y: auto; box-sizing: border-box; }
+  .card h2 { margin: 0 0 10px; font-size: 22px; color: var(--accent); }
+  .card p { margin: 0 0 10px; }
+  .card button { background: var(--btn); color: var(--text); border: none; border-radius: 10px; padding: 10px 14px;
+    font: inherit; cursor: pointer; margin: 4px 6px 4px 0; }
+  .card button.main { background: var(--btn-on); }
+  .card button:disabled { opacity: 0.45; cursor: default; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 10px;
+    border-top: 1px solid rgba(255,255,255,0.08); padding: 4px 0; }
+  .row span small { color: var(--soft); }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="status" class="panel"><div id="dayText"></div><div id="coinText"></div><div class="bar"><div id="dayBar"></div></div></div>
+<div id="basket" class="panel"></div>
+<button id="helpBtn" title="Help">?</button>
+<div id="message" class="panel"></div>
+<div id="toolbar" class="panel"></div>
+
+<div id="welcomeCard" class="card"><div id="welcomeBody"></div></div>
+<div id="shopCard" class="card"><div id="shopBody"></div></div>
+
+<!-- ============================================================
+     CONFIG — every number for the game lives here.
+     Change a number here to change how the game feels.
+     ============================================================ -->
+<script>
+const CONFIG = {
+  world: {
+    width: 2400, height: 1600,   // size of the forest, in pixels
+    treeCount: 70,
+    clearingRadius: 280,         // empty space in the middle for the farm
+    seed: 7,                     // same number = same forest every time
+    leafFadeAlpha: 0.45,         // how see-through leaves get when the player is behind them
+    leafFadeSpeed: 0.08          // how slowly they fade (smaller = softer)
+  },
+  places: {
+    stall: { x: 1010, y: 650, w: 120, h: 50 },   // the shop
+    coop:  { x: 1330, y: 640, w: 90,  h: 56 },   // home for the farm animals
+    pond:  { x: 1200, y: 1020, rx: 80, ry: 38 }  // where you fill the watering can
+  },
+  player: { speed: 150, radius: 12, reach: 44, bobHeight: 1.5, bobSpeed: 8 },
+  camera: { follow: 0.06 },
+  time: {
+    secondsPerDay: 120,          // one in-game day = 2 real minutes
+    saveEverySeconds: 5
+  },
+  plants: {
+    daysToFullSize: 3,           // SPEC: full size in 3 days
+    thirstyAfter: 1,             // days without water before a plant stops growing
+    brownAfter: 3,               // SPEC: brown after 3 days (without water)
+    dieAfter: 4,                 // SPEC: dies on day 4 (without water)
+    harvestAmount: 2,            // crops you get from one plant
+    minSpacing: 28               // pixels between plants or pots
+  },
+  seeds: {
+    carrot:    { name: 'Carrot',    cost: 3, sell: 8 },
+    tomato:    { name: 'Tomato',    cost: 5, sell: 12 },
+    sunflower: { name: 'Sunflower', cost: 6, sell: 15 }
+  },
+  water: { canSize: 10 },        // waterings before you need the pond
+  pot:   { cost: 10 },
+  feed:  { packSize: 5, packCost: 5 },
+  animals: {
+    hungryAfter: 1,              // days after feeding before an animal is hungry
+    productEvery: 1,             // days between eggs or milk (only when fed)
+    chicken: { name: 'Chicken', cost: 25, product: 'egg',  speed: 18, roam: 110 },
+    goat:    { name: 'Goat',    cost: 50, product: 'milk', speed: 14, roam: 150 }
+  },
+  products: {
+    egg:  { name: 'Egg',  sell: 5 },
+    milk: { name: 'Milk', sell: 10 }
+  },
+  wild: { deer: 3, birds: 6, deerSpeed: 22, birdWalk: 22, birdFly: 55 },
+  start: {
+    coins: 20,
+    seeds: { carrot: 3, tomato: 1, sunflower: 0 },
+    pots: 2, feed: 5, water: 10,
+    animals: ['chicken']
+  },
+  messageSeconds: 5,
+  colors: {
+    dirt: '#8a7255', dirtPatch: '#7d6749', wetSoil: '#5e4a35', drySoil: '#6f5a40',
+    trunk: '#6b4a2f', leafDark: '#2f6b3a', leafMid: '#3d8048', leafLight: '#4f9557',
+    shadow: 'rgba(0,0,0,0.18)',
+    shirt: '#d9b35b', trousers: '#4a5a78', skin: '#e7c3a0', hat: '#a8743f',
+    plant: '#5aa14f', plantDark: '#3f7f3a', brown: '#8b6a3e', dead: '#6a5a48',
+    carrot: '#e58a3a', tomato: '#d65a4a', petal: '#f0c64a', seedHead: '#6b4a2f',
+    pot: '#b8663f', potRim: '#cf7b52',
+    water: '#6f9fb8', waterEdge: '#9bc1d1', drop: '#8fc3e0',
+    wood: '#8e6a44', woodDark: '#6e5033', awningA: '#6f8f4e', awningB: '#e8dcc0',
+    roof: '#8c4f3c', coopWall: '#c89b6a',
+    chicken: '#f4f0e6', comb: '#c9594a', beak: '#e0a640',
+    goat: '#d8d2c6', goatDark: '#8f877b',
+    deer: '#9a6a42', deerLight: '#e8dcc6',
+    bird: '#4f6f96', birdRed: '#b0574a',
+    egg: '#f3ead8', milk: '#f6f6f2', milkCap: '#6f8fb0',
+    good: 'rgba(159,209,139,0.55)', bad: 'rgba(230,200,160,0.35)'
+  }
+};
+</script>
+
+<!-- ============================================================
+     STORY — every word the player reads.
+     ============================================================ -->
+<script>
+const Story = {
+  title: 'Green Grow',
+  welcome: [
+    'You live on a small farm inside a quiet forest.',
+    'You want to grow plants and look after animals.',
+    'There is no end. Play as long as you like.'
+  ],
+  howTo: [
+    'Walk: arrow keys or W A S D. Or click where you want to go.',
+    'Choose a tool at the bottom (keys 1 to 5). Then click something, or press Space.',
+    'Plants need water once a day. After 3 days they are full size.',
+    'A plant with no water for 3 days turns brown. On day 4 it dies.',
+    'Feed your animals once a day. Fed animals give eggs or milk.',
+    'Sell your basket at the shop. Fill your watering can at the pond.'
+  ],
+  tools: {
+    hand:  { label: 'Hand',  hint: 'Hand: pick crops, pick up eggs and milk, or dig up a small plant to move it.' },
+    water: { label: 'Water', hint: 'Water: click a plant to water it. Click the pond to fill the can.' },
+    seeds: { label: 'Seeds', hint: 'Seeds: click the ground or an empty pot to sow. Press 3 again to change the seed.' },
+    pot:   { label: 'Pot',   hint: 'Pot: click the ground to put down a pot.' },
+    feed:  { label: 'Feed',  hint: 'Feed: click an animal to feed it.' }
+  },
+  plural(key, n) {
+    const names = { carrot: 'carrot', tomato: 'tomato', sunflower: 'sunflower', egg: 'egg', milk: 'milk' };
+    const base = names[key];
+    if (n === 1 || key === 'milk') return base;
+    return key === 'tomato' ? 'tomatoes' : base + 's';
+  },
+  msg: {
+    sowed:      n => `You sowed a ${n} seed. Water it every day.`,
+    noSeeds:    n => `You have no ${n} seeds. You can buy some at the shop.`,
+    potPlaced:  'You put down a pot.',
+    noPots:     'You have no pots. You can buy one at the shop.',
+    potBack:    'You picked up the empty pot.',
+    watered:    n => `You watered the ${n}.`,
+    alreadyWet: n => `The ${n} already has water today.`,
+    canEmpty:   'Your watering can is empty. Fill it at the pond.',
+    canFull:    'You filled your watering can.',
+    pondHint:   'This is the pond. Choose Water to fill your can here.',
+    harvested:  (n, k) => `You picked ${n} ${k}. They are in your basket.`,
+    dugUp:      n => `You dug up the ${n}. Click the ground or an empty pot to plant it again.`,
+    replanted:  n => `You planted the ${n} again.`,
+    carrying:   'You are holding a plant. Click the ground or an empty pot to plant it.',
+    tooSmall:   'This is still a seed. Wait until it has leaves to move it.',
+    cleared:    'You cleared away the dead plant.',
+    died:       n => `A ${n} plant died. It had no water for 4 days.`,
+    turnedBrown:n => `A ${n} plant is turning brown. It needs water soon.`,
+    notReady:   n => `The ${n} is still growing.`,
+    cantPlace:  'You cannot put that here. Try a clear spot.',
+    blocked:    'Something is in the way.',
+    fed:        n => `You fed the ${n}.`,
+    notHungry:  n => `The ${n} is not hungry right now.`,
+    noFeed:     'You have no animal feed. You can buy some at the shop.',
+    animalFed:  n => `The ${n} is fed and happy.`,
+    animalHungry: n => `The ${n} is hungry. Choose Feed to feed it.`,
+    collected:  k => `You picked up the ${k}. It is in your basket.`,
+    newDay:     d => `Good morning. It is day ${d}.`,
+    sold:       c => `You sold your basket for ${c} coins.`,
+    bought:     n => `You bought ${n}.`,
+    newAnimal:  n => `A ${n} has joined your farm. It lives by the coop.`,
+    wild:       n => `A wild ${n}. It lives in the forest.`,
+    tree:       'A tall forest tree.'
+  }
+};
+</script>
+
+<!-- ============================================================
+     WORLD — the forest: ground, trees, shop, coop, pond.
+     ============================================================ -->
+<script>
+const World = (() => {
+  const C = CONFIG.world, P = CONFIG.places, col = CONFIG.colors;
+  const trees = [], patches = [];
+
+  function makeRandom(seed) {
+    let s = seed;
+    return () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; };
+  }
+
+  function build() {
+    const rand = makeRandom(C.seed);
+    const cx = C.width / 2, cy = C.height / 2;
+    for (let i = 0; i < 90; i++) patches.push({ x: rand() * C.width, y: rand() * C.height, r: 30 + rand() * 70 });
+    let tries = 0;
+    while (trees.length < C.treeCount && tries < 5000) {
+      tries++;
+      const x = 40 + rand() * (C.width - 80), y = 60 + rand() * (C.height - 80);
+      if (Math.hypot(x - cx, y - cy) < C.clearingRadius) continue;
+      if (trees.some(t => Math.hypot(t.x - x, t.y - y) < 90)) continue;
+      trees.push({ x, y, size: 0.85 + rand() * 0.4, trunkR: 11, fade: 1 });
+    }
+  }
+
+  const inRect = (r, x, y, pad = 0) => x > r.x - pad && x < r.x + r.w + pad && y > r.y - pad && y < r.y + r.h + pad;
+  const inPond = (x, y, pad = 0) => {
+    const p = P.pond, dx = (x - p.x) / (p.rx + pad), dy = (y - p.y) / (p.ry + pad);
+    return dx * dx + dy * dy < 1;
+  };
+
+  // Is this point solid (a trunk, the shop, the coop or the pond)?
+  function blocked(x, y, r = 0) {
+    if (x < r || y < r || x > C.width - r || y > C.height - r) return true;
+    for (const t of trees) if (Math.hypot(x - t.x, y - t.y) < r + t.trunkR * t.size) return true;
+    return inRect(P.stall, x, y, r) || inRect(P.coop, x, y, r) || inPond(x, y, r);
+  }
+  function treeAt(x, y) {
+    return trees.find(t => Math.abs(x - t.x) < 45 * t.size && y < t.y + 8 && y > t.y - 190 * t.size);
+  }
+
+  function drawGround(ctx, cam, view) {
+    ctx.fillStyle = col.dirt; ctx.fillRect(0, 0, view.w, view.h);
+    ctx.fillStyle = col.dirtPatch;
+    for (const p of patches) {
+      ctx.beginPath(); ctx.ellipse(p.x - cam.x, p.y - cam.y, p.r, p.r * 0.6, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    const p = P.pond;
+    ctx.fillStyle = col.waterEdge;
+    ctx.beginPath(); ctx.ellipse(p.x - cam.x, p.y - cam.y, p.rx + 6, p.ry + 5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = col.water;
+    ctx.beginPath(); ctx.ellipse(p.x - cam.x, p.y - cam.y, p.rx, p.ry, 0, 0, Math.PI * 2); ctx.fill();
+  }
+
+  function drawTree(ctx, t, cam, player) {
+    const x = t.x - cam.x, y = t.y - cam.y, s = t.size;
+    ctx.fillStyle = col.shadow;
+    ctx.beginPath(); ctx.ellipse(x, y, 34 * s, 12 * s, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = col.trunk; ctx.fillRect(x - 9 * s, y - 90 * s, 18 * s, 90 * s);
+    const behind = player.y < t.y && Math.abs(player.x - t.x) < 50 * s && t.y - player.y < 190 * s;
+    t.fade += ((behind ? C.leafFadeAlpha : 1) - t.fade) * C.leafFadeSpeed;
+    ctx.save(); ctx.globalAlpha = t.fade;
+    const blobs = [[0, -150, 44, col.leafDark], [-30, -120, 36, col.leafDark], [30, -120, 36, col.leafDark],
+      [0, -130, 38, col.leafMid], [-14, -160, 28, col.leafLight], [16, -145, 24, col.leafLight]];
+    for (const [dx, dy, r, c] of blobs) {
+      ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x + dx * s, y + dy * s, r * s, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawStall(ctx, cam) {
+    const r = P.stall, x = r.x - cam.x, y = r.y - cam.y;
+    ctx.fillStyle = col.shadow; ctx.fillRect(x - 4, y + r.h - 6, r.w + 8, 12);
+    ctx.fillStyle = col.woodDark;
+    ctx.fillRect(x + 4, y - 50, 6, r.h + 50); ctx.fillRect(x + r.w - 10, y - 50, 6, r.h + 50);
+    ctx.fillStyle = col.wood; ctx.fillRect(x, y + 10, r.w, r.h - 10);
+    const stripes = 6, sw = (r.w + 16) / stripes;
+    for (let i = 0; i < stripes; i++) {
+      ctx.fillStyle = i % 2 ? col.awningB : col.awningA;
+      ctx.fillRect(x - 8 + i * sw, y - 62, sw, 18);
+    }
+    ctx.fillStyle = col.carrot; ctx.beginPath(); ctx.arc(x + 30, y + 8, 7, 0, 7); ctx.fill();
+    ctx.fillStyle = col.tomato; ctx.beginPath(); ctx.arc(x + 50, y + 8, 7, 0, 7); ctx.fill();
+    ctx.fillStyle = col.petal;  ctx.beginPath(); ctx.arc(x + 70, y + 8, 7, 0, 7); ctx.fill();
+    ctx.fillStyle = col.egg;    ctx.beginPath(); ctx.arc(x + 90, y + 8, 6, 0, 7); ctx.fill();
+    ctx.fillStyle = '#f3efe6'; ctx.font = '600 14px system-ui, sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('Shop', x + r.w / 2, y + 36);
+  }
+
+  function drawCoop(ctx, cam) {
+    const r = P.coop, x = r.x - cam.x, y = r.y - cam.y;
+    ctx.fillStyle = col.shadow; ctx.fillRect(x - 4, y + r.h - 6, r.w + 8, 12);
+    ctx.fillStyle = col.coopWall; ctx.fillRect(x, y, r.w, r.h);
+    ctx.fillStyle = col.roof;
+    ctx.beginPath(); ctx.moveTo(x - 10, y + 4); ctx.lineTo(x + r.w / 2, y - 34); ctx.lineTo(x + r.w + 10, y + 4); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = col.woodDark; ctx.fillRect(x + r.w / 2 - 12, y + r.h - 28, 24, 28);
+  }
+
+  build();
+  return {
+    width: C.width, height: C.height, trees, places: P,
+    start: { x: C.width / 2, y: C.height / 2 + 40 },
+    blocked, treeAt, inPond, inStall: (x, y, pad) => inRect(P.stall, x, y, pad),
+    drawGround, drawTree, drawStall, drawCoop, makeRandom
+  };
+})();
+</script>
+
+<!-- ============================================================
+     MECHANICS — the rules. Split into small parts:
+     State, Time, Player, Farm, Animals, Shop, Actions, Save.
+     ============================================================ -->
+<script>
+const Mechanics = {};
+
+// ---- State: everything the player owns ----
+Mechanics.State = (() => {
+  function fresh() {
+    const s = CONFIG.start;
+    return {
+      day: 0,                                   // days passed (with fractions)
+      coins: s.coins,
+      seeds: { ...s.seeds }, pots: s.pots, feed: s.feed, water: s.water,
+      basket: { carrot: 0, tomato: 0, sunflower: 0, egg: 0, milk: 0 },
+      spots: [],                                // plants and pots: {x, y, pot, plant}
+      animals: [],                              // farm animals
+      products: [],                             // eggs and milk on the ground
+      tool: 'hand', seedType: 'carrot',
+      carrying: null                            // a plant being moved
+    };
+  }
+  return { data: fresh(), fresh };
+})();
+
+// ---- Time: days pass slowly ----
+Mechanics.Time = {
+  update(dt, onNewDay) {
+    const S = Mechanics.State.data;
+    const before = Math.floor(S.day);
+    const dd = dt / CONFIG.time.secondsPerDay;
+    S.day += dd;
+    if (Math.floor(S.day) > before) onNewDay(Math.floor(S.day) + 1);
+    return dd;
+  },
+  label() {
+    const S = Mechanics.State.data, f = S.day % 1;
+    const part = f < 0.34 ? 'Morning' : f < 0.67 ? 'Afternoon' : 'Evening';
+    return { text: `Day ${Math.floor(S.day) + 1} · ${part}`, fraction: f };
+  }
+};
+
+// ---- Player: walking ----
+Mechanics.Player = (() => {
+  const P = CONFIG.player;
+  const me = { x: World.start.x, y: World.start.y, facing: 1, walkTime: 0, moving: false, target: null, stuck: false };
+
+  function update(dt, input) {
+    let dx = 0, dy = 0;
+    if (input.left) dx -= 1; if (input.right) dx += 1;
+    if (input.up) dy -= 1;   if (input.down) dy += 1;
+    me.stuck = false;
+    if (dx || dy) { me.target = null; Mechanics.Actions.cancel(); }
+    else if (me.target) {
+      const tx = me.target.x - me.x, ty = me.target.y - me.y, dist = Math.hypot(tx, ty);
+      if (dist < 4) me.target = null; else { dx = tx / dist; dy = ty / dist; }
+    }
+    const len = Math.hypot(dx, dy);
+    me.moving = len > 0;
+    if (!me.moving) { me.walkTime = 0; return; }
+    dx /= len; dy /= len;
+    const a = tryMove(dx * P.speed * dt, 0), b = tryMove(0, dy * P.speed * dt);
+    if (!a && !b && me.target) { me.target = null; me.stuck = true; }
+    if (dx) me.facing = dx > 0 ? 1 : -1;
+    me.walkTime += dt;
+  }
+
+  function tryMove(mx, my) {
+    if (!mx && !my) return false;
+    const nx = me.x + mx, ny = me.y + my;
+    if (World.blocked(nx, ny, P.radius)) return false;
+    me.x = nx; me.y = ny; return true;
+  }
+
+  function draw(ctx, cam) {
+    const col = CONFIG.colors;
+    const bob = me.moving ? Math.sin(me.walkTime * P.bobSpeed) * P.bobHeight : 0;
+    const x = me.x - cam.x, y = me.y - cam.y;
+    ctx.fillStyle = col.shadow; ctx.beginPath(); ctx.ellipse(x, y, 13, 5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.save(); ctx.translate(x, y - bob); ctx.scale(me.facing, 1);
+    ctx.fillStyle = col.trousers; ctx.fillRect(-7, -14, 14, 14);
+    ctx.fillStyle = col.shirt; ctx.fillRect(-9, -30, 18, 17);
+    ctx.fillStyle = col.skin; ctx.beginPath(); ctx.arc(0, -38, 8, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#3a2f25'; ctx.fillRect(3, -40, 2, 2);
+    ctx.fillStyle = col.hat; ctx.fillRect(-12, -45, 24, 3); ctx.fillRect(-7, -51, 14, 7);
+    ctx.restore();
+    const S = Mechanics.State.data;
+    if (S.carrying) Mechanics.Farm.drawPlant(ctx, x, y - 58 - bob, S.carrying, 0.7);
+  }
+  return { me, update, draw };
+})();
+
+// ---- Farm: pots and plants ----
+Mechanics.Farm = (() => {
+  const PL = CONFIG.plants, col = CONFIG.colors;
+  const S = () => Mechanics.State.data;
+  const name = k => CONFIG.seeds[k].name.toLowerCase();
+
+  const newPlant = type => ({ type, age: 0, dry: 0, dead: false, warned: false });
+  const stage = p => p.age >= PL.daysToFullSize ? 4 : p.age >= 2 ? 3 : p.age >= 1 ? 2 : p.age >= 0.4 ? 1 : 0;
+  const isReady = p => !p.dead && stage(p) === 4;
+  const isBrown = p => p.dry >= PL.brownAfter;
+  const isThirsty = p => p.dry >= PL.thirstyAfter;
+
+  function spotAt(x, y, r = 20) {
+    let best = null, bd = r;
+    for (const s of S().spots) { const d = Math.hypot(s.x - x, s.y - y); if (d < bd) { bd = d; best = s; } }
+    return best;
+  }
+  function canPlace(x, y) {
+    if (World.blocked(x, y, 10)) return false;
+    return !S().spots.some(s => Math.hypot(s.x - x, s.y - y) < PL.minSpacing);
+  }
+
+  // Plants drink, grow, turn brown and die.
+  function update(dd, say) {
+    for (const s of S().spots) {
+      const p = s.plant;
+      if (!p || p.dead) continue;
+      p.dry += dd;
+      if (p.dry >= PL.dieAfter) { p.dead = true; say(Story.msg.died(name(p.type))); continue; }
+      if (isBrown(p) && !p.warned) { p.warned = true; say(Story.msg.turnedBrown(name(p.type))); }
+      if (!isThirsty(p)) p.age = Math.min(p.age + dd, PL.daysToFullSize);
+    }
+  }
+
+  function sow(x, y, spot) {
+    const st = S(), t = st.seedType;
+    if (st.seeds[t] <= 0) return Story.msg.noSeeds(name(t));
+    if (spot) { if (!spot.pot || spot.plant) return Story.msg.cantPlace; spot.plant = newPlant(t); }
+    else { if (!canPlace(x, y)) return Story.msg.cantPlace; st.spots.push({ x, y, pot: false, plant: newPlant(t) }); }
+    st.seeds[t]--;
+    return Story.msg.sowed(name(t));
+  }
+  function placePot(x, y) {
+    const st = S();
+    if (st.pots <= 0) return Story.msg.noPots;
+    if (!canPlace(x, y)) return Story.msg.cantPlace;
+    st.spots.push({ x, y, pot: true, plant: null }); st.pots--;
+    return Story.msg.potPlaced;
+  }
+  function water(spot) {
+    const st = S(), p = spot.plant;
+    if (!p) return null;
+    if (p.dead) return 'This plant has died. Use the Hand to clear it away.';
+    if (p.dry < 0.5) return Story.msg.alreadyWet(name(p.type));
+    if (st.water <= 0) return Story.msg.canEmpty;
+    st.water--; p.dry = 0; p.warned = false;
+    return Story.msg.watered(name(p.type));
+  }
+  function remove(spot) { const a = S().spots; a.splice(a.indexOf(spot), 1); }
+  function hand(spot) {
+    const st = S(), p = spot.plant;
+    if (!p) { remove(spot); st.pots++; return Story.msg.potBack; }
+    if (p.dead) { spot.plant = null; if (!spot.pot) remove(spot); return Story.msg.cleared; }
+    if (isReady(p)) {
+      st.basket[p.type] += PL.harvestAmount;
+      spot.plant = null; if (!spot.pot) remove(spot);
+      return Story.msg.harvested(PL.harvestAmount, Story.plural(p.type, PL.harvestAmount));
+    }
+    if (stage(p) === 0) return Story.msg.tooSmall;
+    st.carrying = p; spot.plant = null; if (!spot.pot) remove(spot);
+    return Story.msg.dugUp(name(p.type));
+  }
+  function replant(x, y, spot) {
+    const st = S(), p = st.carrying;
+    if (spot) { if (!spot.pot || spot.plant) return Story.msg.cantPlace; spot.plant = p; }
+    else { if (!canPlace(x, y)) return Story.msg.cantPlace; st.spots.push({ x, y, pot: false, plant: p }); }
+    st.carrying = null;
+    return Story.msg.replanted(name(p.type));
+  }
+
+  // ---- drawing ----
+  function drawSpot(ctx, s, cam) {
+    const x = s.x - cam.x, y = s.y - cam.y, p = s.plant;
+    if (s.pot) {
+      ctx.fillStyle = col.shadow; ctx.beginPath(); ctx.ellipse(x, y + 2, 15, 5, 0, 0, 7); ctx.fill();
+      ctx.fillStyle = col.pot;
+      ctx.beginPath(); ctx.moveTo(x - 13, y - 18); ctx.lineTo(x + 13, y - 18); ctx.lineTo(x + 9, y); ctx.lineTo(x - 9, y); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = col.potRim; ctx.fillRect(x - 15, y - 22, 30, 6);
+      ctx.fillStyle = p && !p.dead && !isThirsty(p) ? col.wetSoil : col.drySoil;
+      ctx.fillRect(x - 12, y - 20, 24, 3);
+      if (p) drawPlant(ctx, x, y - 20, p, 0.9);
+    } else {
+      ctx.fillStyle = p && !p.dead && !isThirsty(p) ? col.wetSoil : col.drySoil;
+      ctx.beginPath(); ctx.ellipse(x, y, 14, 6, 0, 0, 7); ctx.fill();
+      if (p) drawPlant(ctx, x, y, p, 1);
+    }
+    if (p && !p.dead && isThirsty(p)) drawDrop(ctx, x + 14, y - (s.pot ? 56 : 40));
+    if (p && isReady(p)) {                     // a calm ring shows it is ready to pick
+      ctx.strokeStyle = 'rgba(243,239,230,0.55)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.ellipse(x, y + 1, 18, 8, 0, 0, 7); ctx.stroke();
+    }
+  }
+  function drawDrop(ctx, x, y) {
+    ctx.fillStyle = col.drop;
+    ctx.beginPath(); ctx.moveTo(x, y - 7); ctx.quadraticCurveTo(x + 6, y, x, y + 4); ctx.quadraticCurveTo(x - 6, y, x, y - 7); ctx.fill();
+  }
+  function drawPlant(ctx, x, y, p, sc) {
+    ctx.save(); ctx.translate(x, y); ctx.scale(sc, sc);
+    if (p.dead) {
+      ctx.strokeStyle = col.dead; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(2, -12, 12, -10); ctx.stroke();
+      ctx.restore(); return;
+    }
+    const st = stage(p), brown = isBrown(p);
+    const leaf = brown ? col.brown : col.plant, dark = brown ? col.brown : col.plantDark;
+    const leafAt = (lx, ly, rx, ry, rot, c) => { ctx.fillStyle = c; ctx.beginPath(); ctx.ellipse(lx, ly, rx, ry, rot, 0, 7); ctx.fill(); };
+    if (st === 0) { ctx.fillStyle = col.seedHead; ctx.beginPath(); ctx.ellipse(0, -1, 5, 3, 0, 0, 7); ctx.fill(); ctx.restore(); return; }
+    const h = [0, 8, 16, 26, 34][st];
+    ctx.strokeStyle = dark; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -h); ctx.stroke();
+    leafAt(-5, -h + 1, 5, 2.5, -0.5, leaf); leafAt(5, -h + 1, 5, 2.5, 0.5, leaf);
+    if (st >= 2) { leafAt(-7, -h * 0.5, 7, 3, -0.4, dark); leafAt(7, -h * 0.55, 7, 3, 0.4, dark); }
+    if (st >= 3) { leafAt(-9, -h * 0.8, 8, 3.5, -0.6, leaf); leafAt(9, -h * 0.8, 8, 3.5, 0.6, leaf); }
+    if (st === 4 && !brown) {
+      if (p.type === 'carrot') { ctx.fillStyle = col.carrot; ctx.beginPath(); ctx.moveTo(-5, 0); ctx.lineTo(5, 0); ctx.lineTo(0, 6); ctx.fill(); ctx.fillRect(-5, -3, 10, 3); }
+      if (p.type === 'tomato') { ctx.fillStyle = col.tomato; for (const [a, b] of [[-8, -12], [7, -18], [-4, -24]]) { ctx.beginPath(); ctx.arc(a, b, 4, 0, 7); ctx.fill(); } }
+      if (p.type === 'sunflower') {
+        ctx.fillStyle = col.petal; for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4; ctx.beginPath(); ctx.ellipse(Math.cos(a) * 7, -h - 4 + Math.sin(a) * 7, 4, 2.5, a, 0, 7); ctx.fill(); }
+        ctx.fillStyle = col.seedHead; ctx.beginPath(); ctx.arc(0, -h - 4, 5, 0, 7); ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+  return { spotAt, canPlace, update, sow, placePot, water, hand, replant, drawSpot, drawPlant, isReady, name };
+})();
+
+// ---- Animals: farm animals and wild animals ----
+Mechanics.Animals = (() => {
+  const A = CONFIG.animals, W = CONFIG.wild, col = CONFIG.colors, coop = CONFIG.places.coop;
+  const S = () => Mechanics.State.data;
+  const rand = World.makeRandom(99);
+  const home = { x: coop.x + coop.w / 2, y: coop.y + coop.h + 60 };
+  const wild = [];
+
+  function makeFarmAnimal(type) {
+    return { type, x: home.x + (rand() - 0.5) * 60, y: home.y + (rand() - 0.5) * 30, tx: home.x, ty: home.y,
+             wait: 1, facing: 1, sinceFed: A.hungryAfter, productTimer: 0 };
+  }
+  function makeWild() {
+    wild.length = 0;
+    for (let i = 0; i < W.deer; i++) wild.push(newWild('deer'));
+    for (let i = 0; i < W.birds; i++) wild.push(newWild('bird'));
+  }
+  function randomForestPoint() {
+    for (let i = 0; i < 50; i++) {
+      const x = 60 + rand() * (World.width - 120), y = 60 + rand() * (World.height - 120);
+      if (!World.blocked(x, y, 14)) return { x, y };
+    }
+    return { x: 100, y: 100 };
+  }
+  function newWild(kind) {
+    const p = randomForestPoint();
+    return { kind, x: p.x, y: p.y, tx: p.x, ty: p.y, wait: rand() * 5, facing: 1, fly: false, h: 0 };
+  }
+  const hungry = a => a.sinceFed >= A.hungryAfter;
+
+  // Move slowly towards a goal. Wait a while when there.
+  function walk(a, speed, dt, pickGoal) {
+    if (a.wait > 0) { a.wait -= dt; return; }
+    const dx = a.tx - a.x, dy = a.ty - a.y, d = Math.hypot(dx, dy);
+    if (d < 3) { a.wait = 2 + rand() * 6; pickGoal(a); return; }
+    a.x += dx / d * speed * dt; a.y += dy / d * speed * dt;
+    if (Math.abs(dx) > 1) a.facing = dx > 0 ? 1 : -1;
+  }
+
+  function update(dt, dd) {
+    const st = S();
+    for (const a of st.animals) {
+      const cfg = A[a.type];
+      a.sinceFed += dd;
+      if (!hungry(a)) {
+        a.productTimer += dd;
+        if (a.productTimer >= A.productEvery) {
+          a.productTimer = 0;
+          st.products.push({ kind: cfg.product, x: a.x + 12, y: a.y + 4 });
+        }
+      }
+      walk(a, cfg.speed, dt, g => {
+        for (let i = 0; i < 20; i++) {
+          const ang = rand() * Math.PI * 2, r = rand() * cfg.roam;
+          const x = home.x + Math.cos(ang) * r, y = home.y + Math.sin(ang) * r * 0.6;
+          if (!World.blocked(x, y, 12)) { g.tx = x; g.ty = y; return; }
+        }
+      });
+    }
+    for (const w of wild) {
+      if (w.kind === 'deer') {
+        walk(w, W.deerSpeed, dt, g => { const p = randomForestPoint(); g.tx = p.x; g.ty = p.y; });
+      } else {
+        walk(w, w.fly ? W.birdFly : W.birdWalk, dt, g => {
+          g.fly = rand() < 0.35;               // sometimes a long, slow flight
+          if (g.fly) { const p = randomForestPoint(); g.tx = p.x; g.ty = p.y; }
+          else { g.tx = g.x + (rand() - 0.5) * 60; g.ty = g.y + (rand() - 0.5) * 40; }
+        });
+        w.h += ((w.fly && w.wait <= 0 ? 40 : 0) - w.h) * 0.03;   // rise and land gently
+      }
+    }
+  }
+
+  function feed(a) {
+    const st = S(), n = A[a.type].name.toLowerCase();
+    if (!hungry(a)) return Story.msg.notHungry(n);
+    if (st.feed <= 0) return Story.msg.noFeed;
+    st.feed--; a.sinceFed = 0;
+    return Story.msg.fed(n);
+  }
+  function describe(a) {
+    const n = A[a.type].name.toLowerCase();
+    return hungry(a) ? Story.msg.animalHungry(n) : Story.msg.animalFed(n);
+  }
+  function add(type) { S().animals.push(makeFarmAnimal(type)); }
+  function animalAt(x, y) {
+    return S().animals.find(a => Math.hypot(a.x - x, a.y - 8 - y) < 24) || null;
+  }
+  function wildAt(x, y) {
+    return wild.find(w => !w.fly && Math.hypot(w.x - x, w.y - 10 - y) < (w.kind === 'deer' ? 30 : 12)) || null;
+  }
+  function productAt(x, y) {
+    return S().products.find(p => Math.hypot(p.x - x, p.y - 4 - y) < 18) || null;
+  }
+  function collect(p) {
+    const st = S();
+    st.products.splice(st.products.indexOf(p), 1);
+    st.basket[p.kind]++;
+    return Story.msg.collected(CONFIG.products[p.kind].name.toLowerCase());
+  }
+
+  // ---- drawing ----
+  function shadow(ctx, x, y, w) { ctx.fillStyle = col.shadow; ctx.beginPath(); ctx.ellipse(x, y, w, w * 0.35, 0, 0, 7); ctx.fill(); }
+  function drawFarm(ctx, a, cam) {
+    const x = a.x - cam.x, y = a.y - cam.y;
+    ctx.save(); ctx.translate(x, y);
+    if (a.type === 'chicken') {
+      shadow(ctx, 0, 0, 10);
+      ctx.scale(a.facing, 1);
+      ctx.fillStyle = col.beak; ctx.fillRect(-3, -4, 2, 4); ctx.fillRect(2, -4, 2, 4);
+      ctx.fillStyle = col.chicken; ctx.beginPath(); ctx.ellipse(0, -10, 10, 8, 0, 0, 7); ctx.fill();
+      ctx.beginPath(); ctx.arc(7, -18, 5, 0, 7); ctx.fill();
+      ctx.fillStyle = col.comb; ctx.fillRect(5, -25, 5, 3);
+      ctx.fillStyle = col.beak; ctx.beginPath(); ctx.moveTo(11, -19); ctx.lineTo(15, -17); ctx.lineTo(11, -16); ctx.fill();
+      ctx.fillStyle = '#2d2620'; ctx.fillRect(8, -20, 2, 2);
+    } else {
+      shadow(ctx, 0, 0, 18);
+      ctx.scale(a.facing, 1);
+      ctx.fillStyle = col.goatDark; for (const lx of [-10, -4, 5, 11]) ctx.fillRect(lx, -10, 3, 10);
+      ctx.fillStyle = col.goat; ctx.beginPath(); ctx.ellipse(0, -16, 16, 9, 0, 0, 7); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(16, -24, 6, 5, 0.3, 0, 7); ctx.fill();
+      ctx.strokeStyle = col.goatDark; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(14, -28); ctx.quadraticCurveTo(10, -36, 6, -33); ctx.stroke();
+      ctx.fillStyle = '#2d2620'; ctx.fillRect(17, -26, 2, 2);
+    }
+    ctx.restore();
+    if (hungry(a)) {                              // a small grain sign means "hungry"
+      ctx.fillStyle = col.petal;
+      for (const [dx, dy] of [[0, 0], [5, 2], [-5, 2], [0, 5]]) { ctx.beginPath(); ctx.arc(x + 16 + dx, y - 36 + dy, 2.2, 0, 7); ctx.fill(); }
+    }
+  }
+  function drawWild(ctx, w, cam) {
+    const x = w.x - cam.x, y = w.y - cam.y;
+    if (w.kind === 'deer') {
+      shadow(ctx, x, y, 20);
+      ctx.save(); ctx.translate(x, y); ctx.scale(w.facing, 1);
+      ctx.fillStyle = col.deer; for (const lx of [-12, -6, 6, 12]) ctx.fillRect(lx, -16, 3, 16);
+      ctx.beginPath(); ctx.ellipse(0, -22, 18, 9, 0, 0, 7); ctx.fill();
+      ctx.fillRect(12, -40, 6, 18);
+      ctx.beginPath(); ctx.ellipse(19, -42, 7, 5, 0.2, 0, 7); ctx.fill();
+      ctx.fillStyle = col.deerLight; ctx.beginPath(); ctx.arc(-17, -24, 4, 0, 7); ctx.fill();
+      for (const [sx, sy] of [[-6, -25], [0, -27], [5, -24]]) { ctx.beginPath(); ctx.arc(sx, sy, 1.6, 0, 7); ctx.fill(); }
+      ctx.fillStyle = '#2d2620'; ctx.fillRect(20, -44, 2, 2);
+      ctx.restore();
+    } else {
+      shadow(ctx, x, y, 5);
+      ctx.save(); ctx.translate(x, y - 6 - w.h); ctx.scale(w.facing, 1);
+      ctx.fillStyle = col.bird; ctx.beginPath(); ctx.ellipse(0, 0, 6, 4.5, 0, 0, 7); ctx.fill();
+      ctx.beginPath(); ctx.arc(5, -3, 3.2, 0, 7); ctx.fill();
+      ctx.fillStyle = col.birdRed; ctx.beginPath(); ctx.arc(3, 1, 2.5, 0, 7); ctx.fill();
+      ctx.fillStyle = col.beak; ctx.beginPath(); ctx.moveTo(8, -3); ctx.lineTo(11, -2); ctx.lineTo(8, -1); ctx.fill();
+      if (w.h > 5) { ctx.fillStyle = col.bird; ctx.beginPath(); ctx.ellipse(-1, -5, 7, 2.5, -0.5, 0, 7); ctx.fill(); }
+      ctx.restore();
+    }
+  }
+  function drawProduct(ctx, p, cam) {
+    const x = p.x - cam.x, y = p.y - cam.y;
+    shadow(ctx, x, y, 6);
+    if (p.kind === 'egg') { ctx.fillStyle = col.egg; ctx.beginPath(); ctx.ellipse(x, y - 5, 5, 6.5, 0, 0, 7); ctx.fill(); }
+    else { ctx.fillStyle = col.milk; ctx.fillRect(x - 5, y - 14, 10, 14); ctx.fillStyle = col.milkCap; ctx.fillRect(x - 3, y - 18, 6, 4); }
+  }
+
+  return { wild, makeWild, update, feed, describe, add, animalAt, wildAt, productAt, collect,
+           drawFarm, drawWild, drawProduct, hungry };
+})();
+
+// ---- Shop: buying and selling ----
+Mechanics.Shop = (() => {
+  const S = () => Mechanics.State.data;
+  function basketValue() {
+    const b = S().basket; let total = 0;
+    for (const k in b) total += b[k] * (CONFIG.seeds[k] ? CONFIG.seeds[k].sell : CONFIG.products[k].sell);
+    return total;
+  }
+  function sellAll() {
+    const st = S(), v = basketValue();
+    if (!v) return null;
+    for (const k in st.basket) st.basket[k] = 0;
+    st.coins += v;
+    return Story.msg.sold(v);
+  }
+  // Each item: what it is called, what it costs, what it gives.
+  function items() {
+    const list = [];
+    for (const k in CONFIG.seeds) list.push({ id: 'seed-' + k, label: `${CONFIG.seeds[k].name} seed`,
+      note: `sells for ${CONFIG.seeds[k].sell} each`, cost: CONFIG.seeds[k].cost, give: st => st.seeds[k]++, what: `a ${CONFIG.seeds[k].name.toLowerCase()} seed` });
+    list.push({ id: 'pot', label: 'Pot', note: 'put plants in it', cost: CONFIG.pot.cost, give: st => st.pots++, what: 'a pot' });
+    list.push({ id: 'feed', label: `Animal feed ×${CONFIG.feed.packSize}`, note: 'one meal each', cost: CONFIG.feed.packCost,
+      give: st => st.feed += CONFIG.feed.packSize, what: 'animal feed' });
+    for (const t of ['chicken', 'goat']) {
+      const a = CONFIG.animals[t];
+      list.push({ id: t, label: a.name, note: `gives ${CONFIG.products[a.product].name.toLowerCase()}`, cost: a.cost,
+        give: () => Mechanics.Animals.add(t), what: 'a ' + a.name.toLowerCase(), animal: a.name.toLowerCase() });
+    }
+    return list;
+  }
+  function buy(id) {
+    const st = S(), it = items().find(i => i.id === id);
+    if (!it || st.coins < it.cost) return null;
+    st.coins -= it.cost; it.give(st);
+    return it.animal ? Story.msg.newAnimal(it.animal) : Story.msg.bought(it.what);
+  }
+  return { basketValue, sellAll, items, buy };
+})();
+
+// ---- Actions: what happens when you click something with a tool ----
+Mechanics.Actions = (() => {
+  let pending = null;
+  const S = () => Mechanics.State.data;
+  const me = () => Mechanics.Player.me;
+  const R = CONFIG.player.reach;
+  const closeTo = (x, y, r = R) => () => Math.hypot(me().x - x, me().y - y) < r;
+
+  // Work out what a click means. Returns {near(), run()} or null (just walk).
+  function plan(wx, wy, say) {
+    const st = S(), F = Mechanics.Farm, An = Mechanics.Animals;
+    if (World.inStall(wx, wy, 10)) return { near: () => World.inStall(me().x, me().y, R), run: () => UI.openShop() };
+    if (World.inPond(wx, wy, 6)) {
+      return { near: () => World.inPond(me().x, me().y, R), run: () => {
+        if (st.tool !== 'water') return Story.msg.pondHint;
+        st.water = CONFIG.water.canSize; return Story.msg.canFull;
+      } };
+    }
+    const prod = An.productAt(wx, wy);
+    if (prod && !st.carrying) return { near: closeTo(prod.x, prod.y), run: () => An.collect(prod) };
+    const animal = An.animalAt(wx, wy);
+    if (animal && !st.carrying) {
+      return { near: () => Math.hypot(me().x - animal.x, me().y - animal.y) < R + 6, follow: animal,
+               run: () => st.tool === 'feed' ? An.feed(animal) : An.describe(animal) };
+    }
+    const spot = F.spotAt(wx, wy);
+    if (st.carrying) {
+      if (spot && (!spot.pot || spot.plant)) return { near: () => true, run: () => Story.msg.carrying };
+      return { near: closeTo(wx, wy), run: () => F.replant(wx, wy, spot) };
+    }
+    if (spot) {
+      const near = closeTo(spot.x, spot.y);
+      if (st.tool === 'water') return { near, run: () => F.water(spot) };
+      if (st.tool === 'seeds' && spot.pot && !spot.plant) return { near, run: () => F.sow(wx, wy, spot) };
+      if (st.tool === 'hand') return { near, run: () => F.hand(spot) };
+      if (spot.plant && !spot.plant.dead) return { near, run: () => F.isReady(spot.plant) ? 'It is ready. Choose the Hand to pick it.' : Story.msg.notReady(F.name(spot.plant.type)) };
+      return null;
+    }
+    const w = An.wildAt(wx, wy);
+    if (w) return { near: () => true, run: () => Story.msg.wild(w.kind) };
+    if (st.tool === 'seeds') return { near: closeTo(wx, wy), run: () => F.sow(wx, wy, null) };
+    if (st.tool === 'pot') return { near: closeTo(wx, wy), run: () => F.placePot(wx, wy) };
+    return null;
+  }
+
+  function click(wx, wy, say) {
+    const p = plan(wx, wy, say);
+    const player = Mechanics.Player.me;
+    if (p && p.near()) { pending = null; player.target = null; const m = p.run(); if (m) say(m); return; }
+    pending = p;
+    player.target = { x: wx, y: wy };
+  }
+  // Space key: use the tool on the spot just in front of the player.
+  function useHere(say) {
+    const player = me();
+    const fx = player.x + player.facing * 22, fy = player.y + 2;
+    const p = plan(fx, fy, say);
+    if (p && p.near()) { const m = p.run(); if (m) say(m); }
+    else if (!p) say(Story.tools[S().tool].hint);
+  }
+  function update(say) {
+    if (!pending) return;
+    const player = me();
+    if (pending.follow) player.target = { x: pending.follow.x, y: pending.follow.y };
+    if (pending.near()) {
+      const p = pending; pending = null; player.target = null;
+      const m = p.run(); if (m) say(m);
+    } else if (!player.target || player.stuck) {
+      if (player.stuck) say(Story.msg.blocked);
+      pending = null;
+    }
+  }
+  return { click, useHere, update, cancel: () => { pending = null; } };
+})();
+
+// ---- Save: the farm is kept in this browser ----
+Mechanics.Save = (() => {
+  const KEY = 'green-grow-save-v1';
+  function save() {
+    try {
+      const me = Mechanics.Player.me;
+      localStorage.setItem(KEY, JSON.stringify({ state: Mechanics.State.data, player: { x: me.x, y: me.y } }));
+    } catch (e) { /* saving is not available here; the game still works */ }
+  }
+  function load() {
+    try {
+      const raw = localStorage.getItem(KEY);
+      if (!raw) return false;
+      const d = JSON.parse(raw);
+      Mechanics.State.data = Object.assign(Mechanics.State.fresh(), d.state);
+      Object.assign(Mechanics.Player.me, d.player);
+      return true;
+    } catch (e) { return false; }
+  }
+  function reset() {
+    try { localStorage.removeItem(KEY); } catch (e) {}
+    Mechanics.State.data = Mechanics.State.fresh();
+    Object.assign(Mechanics.Player.me, World.start, { target: null });
+    for (const t of CONFIG.start.animals) Mechanics.Animals.add(t);
+  }
+  return { save, load, reset };
+})();
+</script>
+
+<!-- ============================================================
+     UI — panels, toolbar, messages, shop and welcome cards.
+     ============================================================ -->
+<script>
+const UI = (() => {
+  const $ = id => document.getElementById(id);
+  const S = () => Mechanics.State.data;
+  const TOOLS = ['hand', 'water', 'seeds', 'pot', 'feed'];
+  let msgTimer = 0, lastBar = '';
+  let open = null;   // 'welcome' | 'shop' | null
+
+  function say(text) {
+    $('message').textContent = text;
+    $('message').style.opacity = 1;
+    msgTimer = CONFIG.messageSeconds;
+  }
+
+  function buildToolbar() {
+    $('toolbar').innerHTML = TOOLS.map((t, i) => `<button data-tool="${t}"></button>`).join('');
+    $('toolbar').querySelectorAll('button').forEach(b => b.addEventListener('click', () => chooseTool(b.dataset.tool)));
+  }
+  function chooseTool(t) {
+    const st = S();
+    if (t === 'seeds' && st.tool === 'seeds') {       // choosing Seeds again changes the seed type
+      const types = Object.keys(CONFIG.seeds);
+      st.seedType = types[(types.indexOf(st.seedType) + 1) % types.length];
+      say(`Seed: ${CONFIG.seeds[st.seedType].name}. You have ${st.seeds[st.seedType]}.`);
+    } else {
+      st.tool = t;
+      say(Story.tools[t].hint);
+    }
+  }
+  function toolNote(t) {
+    const st = S();
+    if (t === 'water') return `${st.water} / ${CONFIG.water.canSize}`;
+    if (t === 'seeds') return `${CONFIG.seeds[st.seedType].name} ×${st.seeds[st.seedType]}`;
+    if (t === 'pot') return `×${st.pots}`;
+    if (t === 'feed') return `×${st.feed}`;
+    return st.carrying ? 'holding a plant' : 'pick & move';
+  }
+
+  function update(dt) {
+    const st = S();
+    if (msgTimer > 0) { msgTimer -= dt; if (msgTimer <= 0) $('message').style.opacity = 0; }
+    const tl = Mechanics.Time.label();
+    $('dayText').textContent = tl.text;
+    $('coinText').textContent = `Coins: ${st.coins}`;
+    $('dayBar').style.width = (tl.fraction * 100).toFixed(1) + '%';
+    // toolbar
+    const bar = TOOLS.map(t => t + toolNote(t) + (st.tool === t)).join('|');
+    if (bar !== lastBar) {
+      lastBar = bar;
+      $('toolbar').querySelectorAll('button').forEach((b, i) => {
+        const t = b.dataset.tool;
+        b.className = st.tool === t ? 'on' : '';
+        b.innerHTML = `${i + 1} · ${Story.tools[t].label}<small>${toolNote(t)}</small>`;
+      });
+    }
+    // basket
+    const items = Object.keys(st.basket).filter(k => st.basket[k] > 0).map(k => `${st.basket[k]} ${Story.plural(k, st.basket[k])}`);
+    $('basket').textContent = items.length ? 'Basket: ' + items.join(', ') : 'Basket: empty';
+  }
+
+  function showWelcome(isReturning) {
+    open = 'welcome';
+    const body = $('welcomeBody');
+    body.innerHTML = `<h2>${Story.title}</h2>` +
+      Story.welcome.map(l => `<p>${l}</p>`).join('') +
+      `<p style="color:var(--soft);margin-top:14px">How to play</p>` +
+      Story.howTo.map(l => `<p style="font-size:15px">· ${l}</p>`).join('') +
+      `<div style="margin-top:14px"><button class="main" id="startBtn">${isReturning ? 'Keep playing' : 'Start'}</button>` +
+      (isReturning ? `<button id="resetBtn">Start a new farm</button>` : '') + `</div>`;
+    $('welcomeCard').classList.add('open');
+    $('startBtn').onclick = closeAll;
+    const rb = $('resetBtn');
+    if (rb) rb.onclick = () => {
+      if (rb.dataset.sure) { Mechanics.Save.reset(); closeAll(); say('You started a new farm.'); }
+      else { rb.dataset.sure = '1'; rb.textContent = 'Yes, start a new farm (your old farm will be gone)'; }
+    };
+  }
+
+  function openShop() {
+    open = 'shop';
+    renderShop();
+    $('shopCard').classList.add('open');
+    return null;
+  }
+  function renderShop() {
+    const st = S(), value = Mechanics.Shop.basketValue();
+    $('shopBody').innerHTML = `<h2>Shop</h2><p>You have ${st.coins} coins.</p>` +
+      `<div class="row"><span>Sell your basket<br><small>${value ? 'you get ' + value + ' coins' : 'your basket is empty'}</small></span>` +
+      `<button class="main" data-sell ${value ? '' : 'disabled'}>Sell</button></div>` +
+      Mechanics.Shop.items().map(it =>
+        `<div class="row"><span>${it.label}<br><small>${it.note}</small></span>` +
+        `<button data-buy="${it.id}" ${st.coins < it.cost ? 'disabled' : ''}>Buy · ${it.cost}</button></div>`).join('') +
+      `<div style="margin-top:12px"><button id="closeShop">Close</button></div>`;
+    $('shopBody').querySelectorAll('[data-buy]').forEach(b => b.onclick = () => { const m = Mechanics.Shop.buy(b.dataset.buy); if (m) say(m); renderShop(); });
+    const sell = $('shopBody').querySelector('[data-sell]');
+    sell.onclick = () => { const m = Mechanics.Shop.sellAll(); if (m) say(m); renderShop(); };
+    $('closeShop').onclick = closeAll;
+  }
+  function closeAll() {
+    open = null;
+    $('welcomeCard').classList.remove('open');
+    $('shopCard').classList.remove('open');
+  }
+
+  $('helpBtn').onclick = () => showWelcome(true);
+  buildToolbar();
+  return { say, update, chooseTool, showWelcome, openShop, closeAll, isOpen: () => open !== null, TOOLS };
+})();
+</script>
+
+<!-- ============================================================
+     GAME — connects everything: input, camera, drawing, loop.
+     ============================================================ -->
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const view = { w: 0, h: 0 };
+  const cam = { x: 0, y: 0 };
+  const input = { left: false, right: false, up: false, down: false };
+  const pointer = { x: -1, y: -1, inside: false };
+  const me = Mechanics.Player.me;
+  document.title = Story.title;
+
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    view.w = window.innerWidth; view.h = window.innerHeight;
+    canvas.width = view.w * dpr; canvas.height = view.h * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resize); resize();
+
+  // ---- input ----
+  const keyMap = { ArrowLeft: 'left', a: 'left', A: 'left', ArrowRight: 'right', d: 'right', D: 'right',
+                   ArrowUp: 'up', w: 'up', W: 'up', ArrowDown: 'down', s: 'down', S: 'down' };
+  window.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { UI.closeAll(); return; }
+    if (UI.isOpen()) return;
+    if (keyMap[e.key]) { input[keyMap[e.key]] = true; e.preventDefault(); return; }
+    const n = parseInt(e.key, 10);
+    if (n >= 1 && n <= UI.TOOLS.length) UI.chooseTool(UI.TOOLS[n - 1]);
+    if (e.key === ' ' || e.key === 'e' || e.key === 'E') { e.preventDefault(); Mechanics.Actions.useHere(UI.say); }
+  });
+  window.addEventListener('keyup', e => { if (keyMap[e.key]) input[keyMap[e.key]] = false; });
+  window.addEventListener('blur', () => { for (const k in input) input[k] = false; });
+  canvas.addEventListener('pointerdown', e => {
+    if (UI.isOpen()) return;
+    Mechanics.Actions.click(e.clientX + cam.x, e.clientY + cam.y, UI.say);
+  });
+  canvas.addEventListener('pointermove', e => { pointer.x = e.clientX; pointer.y = e.clientY; pointer.inside = true; });
+  canvas.addEventListener('pointerleave', () => { pointer.inside = false; });
+
+  // ---- camera ----
+  function cameraGoal() {
+    return {
+      x: Math.min(Math.max(me.x - view.w / 2, 0), Math.max(World.width - view.w, 0)),
+      y: Math.min(Math.max(me.y - view.h / 2, 0), Math.max(World.height - view.h, 0))
+    };
+  }
+
+  // ---- start ----
+  const returning = Mechanics.Save.load();
+  if (!returning) for (const t of CONFIG.start.animals) Mechanics.Animals.add(t);
+  Mechanics.Animals.makeWild();
+  Object.assign(cam, cameraGoal());
+  UI.showWelcome(returning);
+
+  // A soft ring under the pointer shows where a seed, pot or plant would go.
+  function drawPlacementRing() {
+    const st = Mechanics.State.data;
+    if (!pointer.inside || !(st.carrying || st.tool === 'seeds' || st.tool === 'pot')) return;
+    const wx = pointer.x + cam.x, wy = pointer.y + cam.y;
+    const spot = Mechanics.Farm.spotAt(wx, wy);
+    const ok = spot ? (spot.pot && !spot.plant && st.tool !== 'pot') : Mechanics.Farm.canPlace(wx, wy);
+    ctx.strokeStyle = ok ? CONFIG.colors.good : CONFIG.colors.bad; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.ellipse((spot ? spot.x : wx) - cam.x, (spot ? spot.y : wy) - cam.y, 15, 7, 0, 0, 7); ctx.stroke();
+  }
+
+  let last = performance.now(), saveTimer = 0;
+  function frame(now) {
+    const dt = Math.min((now - last) / 1000, 0.05);
+    last = now;
+
+    if (!UI.isOpen()) {                         // time stops while a card is open
+      const dd = Mechanics.Time.update(dt, d => UI.say(Story.msg.newDay(d)));
+      Mechanics.Player.update(dt, input);
+      Mechanics.Actions.update(UI.say);
+      Mechanics.Farm.update(dd, UI.say);
+      Mechanics.Animals.update(dt, dd);
+      saveTimer += dt;
+      if (saveTimer > CONFIG.time.saveEverySeconds) { saveTimer = 0; Mechanics.Save.save(); }
+    }
+    UI.update(dt);
+
+    const goal = cameraGoal();
+    cam.x += (goal.x - cam.x) * CONFIG.camera.follow;
+    cam.y += (goal.y - cam.y) * CONFIG.camera.follow;
+
+    // ---- draw, back to front ----
+    World.drawGround(ctx, cam, view);
+    drawPlacementRing();
+    const st = Mechanics.State.data, P = World.places;
+    const things = [];
+    for (const t of World.trees) things.push({ y: t.y, draw: () => World.drawTree(ctx, t, cam, me) });
+    things.push({ y: P.stall.y + P.stall.h, draw: () => World.drawStall(ctx, cam) });
+    things.push({ y: P.coop.y + P.coop.h, draw: () => World.drawCoop(ctx, cam) });
+    for (const s of st.spots) things.push({ y: s.y, draw: () => Mechanics.Farm.drawSpot(ctx, s, cam) });
+    for (const p of st.products) things.push({ y: p.y, draw: () => Mechanics.Animals.drawProduct(ctx, p, cam) });
+    for (const a of st.animals) things.push({ y: a.y, draw: () => Mechanics.Animals.drawFarm(ctx, a, cam) });
+    for (const w of Mechanics.Animals.wild) things.push({ y: w.h > 5 ? 99999 : w.y, draw: () => Mechanics.Animals.drawWild(ctx, w, cam) });
+    things.push({ y: me.y, draw: () => Mechanics.Player.draw(ctx, cam) });
+    things.sort((a, b) => a.y - b.y);
+    for (const t of things) t.draw();
+
+    requestAnimationFrame(frame);
+  }
+  window.addEventListener('beforeunload', () => Mechanics.Save.save());
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
